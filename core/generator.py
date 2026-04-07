@@ -8,6 +8,7 @@ from ..adapter import (
     Jimeng2APIAdapter,
     OpenAIAdapter,
     ZImageAdapter,
+    GrokAdapter,
 )
 from .types import (
     AdapterConfig,
@@ -34,6 +35,7 @@ class ImageGenerator:
             AdapterType.OPENAI: OpenAIAdapter,
             AdapterType.Z_IMAGE: ZImageAdapter,
             AdapterType.JIMENG2API: Jimeng2APIAdapter,
+            AdapterType.GROK: GrokAdapter,
         }
 
         adapter_cls = adapter_map.get(config.type)
