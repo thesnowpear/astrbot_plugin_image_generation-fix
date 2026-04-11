@@ -8,6 +8,7 @@ from .gemini_openai_adapter import GeminiOpenAIAdapter
 from .jimeng2api_adapter import Jimeng2APIAdapter
 from .openai_adapter import OpenAIAdapter
 from .z_image_adapter import ZImageAdapter
+from .grok_adapter import GrokAdapter
 
 __all__ = [
     "GeminiAdapter",
@@ -15,4 +16,5 @@ __all__ = [
     "OpenAIAdapter",
     "ZImageAdapter",
     "Jimeng2APIAdapter",
+    "GrokAdapter"
 ]
