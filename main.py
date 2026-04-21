@@ -7,6 +7,7 @@ AstrBot 图像生成插件主模块
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import time
@@ -32,6 +33,8 @@ from .core.utils import mask_sensitive, validate_aspect_ratio, validate_resoluti
 
 class ImageGenerationPlugin(Star):
     """图像生成插件主类"""
+
+    SEND_TIMEOUT_SECONDS = 20
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -301,7 +304,7 @@ class ImageGenerationPlugin(Star):
             logger.error(
                 f"[ImageGen] 任务 {task_id} 生成失败，耗时: {duration:.2f}s, 错误: {result.error}"
             )
-            await self.context.send_message(
+            await self._safe_send_message(
                 unified_msg_origin,
                 MessageChain().message(f"❌ 生成失败: {result.error}"),
             )
