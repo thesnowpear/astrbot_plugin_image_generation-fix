@@ -168,43 +168,9 @@ class ImageGenerationPlugin(Star):
         """创建后台任务并添加到管理器中。"""
         return self.task_manager.create_task(coro)
 
-    async def _safe_send_message(
-        self, unified_msg_origin: str, chain: MessageChain, timeout: float | None = None
-    ) -> None:
-        """发送消息并增加超时保护，避免平台层卡死导致协程悬挂。"""
-        send_timeout = timeout or self.SEND_TIMEOUT_SECONDS
-        await asyncio.wait_for(
-            self.context.send_message(unified_msg_origin, chain), timeout=send_timeout
-        )
-
-    def _append_image_component(
-        self,
-        chain: MessageChain,
-        file_path: str,
-        image_bytes: bytes | None = None,
-        prefer_base64: bool = True,
-    ) -> bool:
+    def _append_image_component(self, chain: MessageChain, file_path: str) -> bool:
         """向消息链添加图片组件，兼容不同 AstrBot 版本/平台。"""
-        image_cls = getattr(Comp, "Image", None)
-        append_method = getattr(chain, "append", None)
-
-        # 优先使用 base64（QQ/OneBot 侧通常更稳定）
-        if prefer_base64 and image_bytes and image_cls is not None:
-            b64_data = base64.b64encode(image_bytes).decode("utf-8")
-            for ctor_name in ("fromBase64", "from_base64"):
-                ctor = getattr(image_cls, ctor_name, None)
-                if callable(ctor):
-                    try:
-                        component = ctor(b64_data)
-                        if callable(append_method):
-                            append_method(component)
-                            return True
-                    except Exception as exc:
-                        logger.debug(
-                            f"[ImageGen] Image.{ctor_name} 添加 base64 图片失败: {exc}"
-                        )
-
-        # 其次使用 MessageChain 的便捷方法
+        # 优先使用 MessageChain 的便捷方法
         for method_name in ("file_image", "image"):
             method = getattr(chain, method_name, None)
             if callable(method):
@@ -217,12 +183,15 @@ class ImageGenerationPlugin(Star):
                     )
 
         # 回退：直接构造 Image 消息组件
+        image_cls = getattr(Comp, "Image", None)
         if image_cls is not None:
+            # 不同版本中 Image 可能有不同构造方法
             for ctor_name in ("fromFileSystem", "from_file", "fromPath"):
                 ctor = getattr(image_cls, ctor_name, None)
                 if callable(ctor):
                     try:
                         component = ctor(file_path)
+                        append_method = getattr(chain, "append", None)
                         if callable(append_method):
                             append_method(component)
                             return True
@@ -230,8 +199,10 @@ class ImageGenerationPlugin(Star):
                         logger.debug(
                             f"[ImageGen] Image.{ctor_name} 添加图片失败: {exc}"
                         )
+            # 最后尝试直接初始化
             try:
                 component = image_cls.fromURL(file_path)
+                append_method = getattr(chain, "append", None)
                 if callable(append_method):
                     append_method(component)
                     return True
@@ -351,12 +322,10 @@ class ImageGenerationPlugin(Star):
 
         chain = MessageChain()
         added_count = 0
-        saved_images: list[tuple[str, bytes]] = []
         for img_bytes in result.images:
             file_path = self.image_processor.save_generated_image(task_id, img_bytes)
             if file_path:
-                saved_images.append((file_path, img_bytes))
-                if self._append_image_component(chain, file_path, img_bytes):
+                if self._append_image_component(chain, file_path):
                     added_count += 1
                 else:
                     logger.error(
@@ -364,7 +333,7 @@ class ImageGenerationPlugin(Star):
                     )
 
         if added_count == 0:
-            await self._safe_send_message(
+            await self.context.send_message(
                 unified_msg_origin,
                 MessageChain().message(
                     "❌ 图片已生成但发送失败：当前平台消息组件不兼容，请更新 AstrBot 或联系插件作者。"
@@ -393,45 +362,10 @@ class ImageGenerationPlugin(Star):
             chain.message("\n" + "\n".join(info_parts))
 
         try:
-            await self._safe_send_message(unified_msg_origin, chain)
-            logger.info(f"[ImageGen] 任务 {task_id} 图片消息发送成功")
+            await self.context.send_message(unified_msg_origin, chain)
         except Exception as exc:
-            logger.error(f"[ImageGen] 发送图片消息失败，尝试降级重试: {exc}")
-            err_text = str(exc)
-            is_retcode_1200 = "retcode=1200" in err_text or "Timeout: NTEvent" in err_text
-
-            # QQ/NTQQ 常见 retcode=1200 超时：降级为逐张发送，降低一次性 sendMsg 负载
-            fallback_success = 0
-            for idx, (file_path, img_bytes) in enumerate(saved_images, start=1):
-                single_chain = MessageChain()
-                if not self._append_image_component(
-                    single_chain,
-                    file_path,
-                    img_bytes,
-                    prefer_base64=not is_retcode_1200,
-                ):
-                    continue
-                try:
-                    await self._safe_send_message(unified_msg_origin, single_chain, 30)
-                    fallback_success += 1
-                    await asyncio.sleep(0.35)
-                except Exception as single_exc:
-                    logger.error(
-                        f"[ImageGen] 降级逐张发送失败({idx}/{len(saved_images)}): {single_exc}"
-                    )
-
-            if fallback_success > 0:
-                if info_parts:
-                    await self._safe_send_message(
-                        unified_msg_origin,
-                        MessageChain().message("\n" + "\n".join(info_parts)),
-                    )
-                logger.info(
-                    f"[ImageGen] 降级逐张发送成功: {fallback_success}/{len(saved_images)}"
-                )
-                return
-
-            await self._safe_send_message(
+            logger.error(f"[ImageGen] 发送图片消息失败: {exc}")
+            await self.context.send_message(
                 unified_msg_origin,
                 MessageChain().message(f"❌ 图片已生成，但发送失败: {exc}"),
             )
