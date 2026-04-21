@@ -7,6 +7,7 @@ AstrBot 图像生成插件主模块
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import time
