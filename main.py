@@ -14,6 +14,7 @@ from collections.abc import Coroutine
 from typing import Any
 
 from astrbot.api import logger
+import astrbot.api.message_components as Comp
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.config.astrbot_config import AstrBotConfig
@@ -164,6 +165,49 @@ class ImageGenerationPlugin(Star):
         """创建后台任务并添加到管理器中。"""
         return self.task_manager.create_task(coro)
 
+    def _append_image_component(self, chain: MessageChain, file_path: str) -> bool:
+        """向消息链添加图片组件，兼容不同 AstrBot 版本/平台。"""
+        # 优先使用 MessageChain 的便捷方法
+        for method_name in ("file_image", "image"):
+            method = getattr(chain, method_name, None)
+            if callable(method):
+                try:
+                    method(file_path)
+                    return True
+                except Exception as exc:
+                    logger.debug(
+                        f"[ImageGen] 调用 MessageChain.{method_name} 失败: {exc}"
+                    )
+
+        # 回退：直接构造 Image 消息组件
+        image_cls = getattr(Comp, "Image", None)
+        if image_cls is not None:
+            # 不同版本中 Image 可能有不同构造方法
+            for ctor_name in ("fromFileSystem", "from_file", "fromPath"):
+                ctor = getattr(image_cls, ctor_name, None)
+                if callable(ctor):
+                    try:
+                        component = ctor(file_path)
+                        append_method = getattr(chain, "append", None)
+                        if callable(append_method):
+                            append_method(component)
+                            return True
+                    except Exception as exc:
+                        logger.debug(
+                            f"[ImageGen] Image.{ctor_name} 添加图片失败: {exc}"
+                        )
+            # 最后尝试直接初始化
+            try:
+                component = image_cls.fromURL(file_path)
+                append_method = getattr(chain, "append", None)
+                if callable(append_method):
+                    append_method(component)
+                    return True
+            except Exception as exc:
+                logger.debug(f"[ImageGen] Image.fromURL 添加图片失败: {exc}")
+
+        return False
+
     # ---------------------- 核心生图逻辑 ----------------------
 
     async def _generate_and_send_image_async(
@@ -274,10 +318,25 @@ class ImageGenerationPlugin(Star):
         self.usage_manager.record_usage(unified_msg_origin)
 
         chain = MessageChain()
+        added_count = 0
         for img_bytes in result.images:
             file_path = self.image_processor.save_generated_image(task_id, img_bytes)
             if file_path:
-                chain.file_image(file_path)
+                if self._append_image_component(chain, file_path):
+                    added_count += 1
+                else:
+                    logger.error(
+                        f"[ImageGen] 无法将图片添加到消息链，可能是平台/版本兼容问题: {file_path}"
+                    )
+
+        if added_count == 0:
+            await self.context.send_message(
+                unified_msg_origin,
+                MessageChain().message(
+                    "❌ 图片已生成但发送失败：当前平台消息组件不兼容，请更新 AstrBot 或联系插件作者。"
+                ),
+            )
+            return
 
         info_parts = []
         if self.config_manager.show_generation_info:
@@ -299,7 +358,14 @@ class ImageGenerationPlugin(Star):
         if info_parts:
             chain.message("\n" + "\n".join(info_parts))
 
-        await self.context.send_message(unified_msg_origin, chain)
+        try:
+            await self.context.send_message(unified_msg_origin, chain)
+        except Exception as exc:
+            logger.error(f"[ImageGen] 发送图片消息失败: {exc}")
+            await self.context.send_message(
+                unified_msg_origin,
+                MessageChain().message(f"❌ 图片已生成，但发送失败: {exc}"),
+            )
 
 
     # ---------------------- 指令处理 ----------------------
